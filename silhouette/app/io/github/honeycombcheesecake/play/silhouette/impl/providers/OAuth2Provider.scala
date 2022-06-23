@@ -19,14 +19,13 @@
  */
 package io.github.honeycombcheesecake.play.silhouette.impl.providers
 
-import java.net.URLEncoder._
-
 import io.github.honeycombcheesecake.play.silhouette.api._
 import io.github.honeycombcheesecake.play.silhouette.api.exceptions._
 import io.github.honeycombcheesecake.play.silhouette.api.util.ExtractableRequest
 import io.github.honeycombcheesecake.play.silhouette.impl.exceptions.{ AccessDeniedException, UnexpectedResponseException }
 import io.github.honeycombcheesecake.play.silhouette.impl.providers.OAuth2Provider._
 import io.github.honeycombcheesecake.play.silhouette.impl.providers.state.UserStateItemHandler
+import play.api.http.Status.SEE_OTHER
 import play.api.libs.functional.syntax._
 import play.api.libs.json._
 import play.api.libs.ws.WSResponse
@@ -201,22 +200,23 @@ trait OAuth2Provider extends SocialStateProvider with OAuth2Constants with Logge
     implicit
     request: ExtractableRequest[B]): Future[Result] = {
     socialStateHandler.state.map { state =>
-      val serializedState = socialStateHandler.serialize(state)
-      val stateParam = if (serializedState.isEmpty) List() else List(State -> serializedState)
-      val redirectParam = settings.redirectURL match {
-        case Some(rUri) => List((RedirectURI, resolveCallbackURL(rUri)))
-        case None => Nil
-      }
-      val params = settings.scope.foldLeft(List(
-        (ClientID, settings.clientID),
-        (ResponseType, Code)) ++ stateParam ++ settings.authorizationParams.toList ++ redirectParam) {
-        case (p, s) => (Scope, s) :: p
-      }
-      val encodedParams = params.map { p => encode(p._1, "UTF-8") + "=" + encode(p._2, "UTF-8") }
       val url = settings.authorizationURL.getOrElse {
         throw new ConfigurationException(AuthorizationURLUndefined.format(id))
-      } + encodedParams.mkString("?", "&", "")
-      val redirect = socialStateHandler.publish(Results.Redirect(url), state)
+      }
+      val serializedState = socialStateHandler.serialize(state)
+      val stateParam = if (serializedState.isEmpty) Map.empty else Map(State -> List(serializedState))
+      val redirectParam = settings.redirectURL match {
+        case Some(rUri) => Map(RedirectURI -> List(resolveCallbackURL(rUri)))
+        case None => Map.empty
+      }
+      val params = settings.scope.foldLeft(
+        Map(ClientID -> List(settings.clientID), (ResponseType, List(Code)))
+          ++ stateParam
+          ++ settings.authorizationParams.view.mapValues(List(_))
+          ++ redirectParam) {
+        case (p, s) => p + (Scope -> List(s))
+      }
+      val redirect = socialStateHandler.publish(Results.Redirect(url, params, SEE_OTHER), state)
       logger.debug("[Silhouette][%s] Use authorization URL: %s".format(id, settings.authorizationURL))
       logger.debug("[Silhouette][%s] Redirecting to: %s".format(id, url))
       redirect
